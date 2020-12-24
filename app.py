@@ -13,6 +13,7 @@ from starlette.responses import StreamingResponse
 
 app = FastAPI(extra={})
 
+cv2.ocl.useOpenCL()
 
 def save_stream_frame(channel):
     streams = streamlink.streams(f"https://www.twitch.tv/{channel}")
@@ -40,10 +41,9 @@ def autoAdjustments_with_convertScaleAbs(img):
 
 
 def prepare_logo(logo_array):
-    template = autoAdjustments_with_convertScaleAbs(logo_array)
-    cv2.imwrite(f't.png', template)
-    template = imutils.resize(logo_array, width=1080)
-    template = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+    template = imutils.resize(logo_array, height=1080)
+    # template = autoAdjustments_with_convertScaleAbs(logo_array)
+    template = cv2.cvtColor(logo_array, cv2.COLOR_BGR2GRAY)
     cv2.imwrite(f'_t.png', template)
     _, template = cv2.threshold(template, 127, 255, 0)
     cv2.imwrite(f'__t.png', template)
@@ -74,6 +74,7 @@ def prepare_logo(logo_array):
     x, y, w, h = cv2.boundingRect(template)
     croped_template = template[y:y+h, x:x+w]
     cv2.imwrite(f'_____t.png', croped_template)
+    croped_template = imutils.resize(croped_template, height=1080)
     return croped_template
 
 
@@ -87,10 +88,20 @@ def match_logo(logo):
     # Read the images from the file
     frame = cv2.imread('frame.png')
     template = prepare_logo(cv2.imread(f'{logo}.png'))
-    prepared_frame = cv2.Canny(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), 32, 128, apertureSize=3)
+    prepared_frame = cv2.UMat(cv2.Canny(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), 32, 128, apertureSize=3, L2gradient=True))
 
-    src = cv2.cuda_GpuMat()
-    src.upload(prepared_frame)
+    # src = cv2.cuda_GpuMat()
+    # src.upload(prepared_frame)
+
+    t = time.time()
+    resized_templates = []
+    for scale in np.linspace(0.01, 0.5, 20)[::-1]:
+    # for scale in np.arange(0.03, 0.5, 0.005)[::-1]:
+        res_t = time.time()
+        resized = imutils.resize(template, height=int(template.shape[0] * scale))
+        tW, tH = resized.shape[::-1]
+        resized_templates.append((tW, tH, cv2.UMat(resized)))
+    print(time.time() - t)
 
     cv2.imwrite(f'prepared_template.png', template)
     cv2.imwrite(f'prepared_frame.png', prepared_frame)
@@ -99,21 +110,18 @@ def match_logo(logo):
         found = None
 
         t = time.time()
-        for scale in np.linspace(0.05, 0.5, 10)[::-1]:
-            resized = imutils.resize(template, width=int(template.shape[1] * scale))
-            tW, tH = resized.shape[::-1]
-            r = template.shape[1] / float(resized.shape[1])
+        for resized_t in resized_templates:
             res_t = time.time()
-            result = cv2.matchTemplate(src, resized, method)
-            print(time.time() - res_t)
+            tW, tH, resized = resized_t
+            result = cv2.matchTemplate(prepared_frame, resized, method)
             (_, maxVal, _, maxLoc) = cv2.minMaxLoc(result)
 
-            # print(scale, maxVal)
             if found is None or maxVal > found[0]:
-                found = (maxVal, maxLoc, r, tW, tH)
+                found = (maxVal, maxLoc, tW, tH, scale)
+            print((scale, maxVal), time.time() - res_t)
 
-        print('---', time.time() - t)
-        maxVal, maxLoc, r, tW, tH = found
+        print('---', found, time.time() - t)
+        maxVal, maxLoc, tW, tH, scale = found
         output_image = frame.copy()
         cv2.rectangle(output_image, (maxLoc[0], maxLoc[1]), (maxLoc[0] + tW, maxLoc[1] + tH), (0, 0, 255), 2)
         cv2.imwrite('result.png', output_image)
